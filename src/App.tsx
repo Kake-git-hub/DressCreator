@@ -30,7 +30,6 @@ interface ProcessedImage {
   thumbUrl: string;
   categoryId: string;
   itemName: string;
-  timestamp: string;
 }
 
 const App: React.FC = () => {
@@ -244,19 +243,16 @@ const App: React.FC = () => {
       const foundCategory = CATEGORIES.find(c => c.label === parsed.category) || { id: "0_不明", label: "不明" };
       const itemName = (parsed.name || "装備").replace(/[\\/:*?"<>|]/g, "").substring(0, 25);
       
-      const now = new Date();
-      const timestamp = `${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}${now.getSeconds().toString().padStart(2, '0')}`;
-      
-      return { categoryId: foundCategory.id, itemName, timestamp };
+      return { categoryId: foundCategory.id, itemName };
     } catch { 
-      return { categoryId: "0_不明", itemName: `装備_${Date.now()}`, timestamp: "" }; 
+      return { categoryId: "0_不明", itemName: `装備_${Date.now()}` }; 
     }
   };
 
-  const buildFilename = (categoryId: string, itemName: string, timestamp: string) => {
+  const buildFilename = (categoryId: string, itemName: string) => {
     const isAccessory = categoryId.includes("アクセサリー");
     const overlapPrefix = isAccessory ? "_overlap" : "";
-    return `${categoryId}${overlapPrefix}_${itemName}_${timestamp}`;
+    return `${categoryId}${overlapPrefix}_${itemName}`;
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -270,7 +266,7 @@ const App: React.FC = () => {
     for (const file of files) {
       const { originalUrl, thumbUrl } = await processImage(file);
       const info = await suggestFilenameInfo(originalUrl);
-      const name = buildFilename(info.categoryId, info.itemName, info.timestamp);
+      const name = buildFilename(info.categoryId, info.itemName);
       
       processedList.push({ 
         id: crypto.randomUUID(), 
@@ -278,8 +274,7 @@ const App: React.FC = () => {
         originalUrl, 
         thumbUrl,
         categoryId: info.categoryId,
-        itemName: info.itemName,
-        timestamp: info.timestamp
+        itemName: info.itemName
       });
     }
     
@@ -291,7 +286,7 @@ const App: React.FC = () => {
   const handleCategoryChange = (id: string, newCategoryId: string) => {
     setImages(prev => prev.map(img => {
       if (img.id === id) {
-        const newName = buildFilename(newCategoryId, img.itemName, img.timestamp);
+        const newName = buildFilename(newCategoryId, img.itemName);
         return { ...img, categoryId: newCategoryId, name: newName };
       }
       return img;
@@ -301,7 +296,7 @@ const App: React.FC = () => {
   const handleNameInputBlur = (id: string, newItemName: string) => {
     setImages(prev => prev.map(img => {
       if (img.id === id) {
-        const newName = buildFilename(img.categoryId, newItemName, img.timestamp);
+        const newName = buildFilename(img.categoryId, newItemName);
         return { ...img, itemName: newItemName, name: newName };
       }
       return img;
