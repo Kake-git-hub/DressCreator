@@ -303,13 +303,20 @@ const App: React.FC = () => {
     }));
   };
 
-  const downloadFile = (url: string, filename: string) => {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const downloadFile = (dataUrl: string, filename: string) => {
+    // Data URLをBlobに変換してダウンロード（大きな画像でも動作する）
+    fetch(dataUrl)
+      .then(res => res.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
   };
 
   const downloadSet = (img: ProcessedImage) => {
