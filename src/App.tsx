@@ -1,7 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { Upload, Download, Trash2, Loader2, Image as ImageIcon, Sparkles, RefreshCw, ChevronDown } from 'lucide-react';
-
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
+import React, { useState, useRef, useEffect } from 'react';
+import { Upload, Download, Trash2, Loader2, Image as ImageIcon, Sparkles, RefreshCw, ChevronDown, Key, ExternalLink, AlertTriangle, Save } from 'lucide-react';
 
 // カテゴリー定義
 const CATEGORIES = [
@@ -33,6 +31,10 @@ interface ProcessedImage {
 }
 
 const App: React.FC = () => {
+  // APIキーの状態管理。初期値としてlocalStorageから読み込む
+  const [apiKey, setApiKey] = useState("");
+  const [showApiInput, setShowApiInput] = useState(false);
+  
   const [baseSilhouette, setBaseSilhouette] = useState<BaseSilhouette | null>(null);
   const [images, setImages] = useState<ProcessedImage[]>([]);
   const [processing, setProcessing] = useState(false);
@@ -40,7 +42,22 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const baseInputRef = useRef<HTMLInputElement>(null);
 
-  // ベースシルエットの読み込み
+  // 初回マウント時に保存されたキーを読み込む
+  useEffect(() => {
+    const savedKey = localStorage.getItem('user_gemini_api_key');
+    if (savedKey) {
+      setApiKey(savedKey);
+    }
+  }, []);
+
+  // APIキーの保存処理
+  const saveApiKey = (key: string) => {
+    const trimmedKey = key.trim();
+    setApiKey(trimmedKey);
+    localStorage.setItem('user_gemini_api_key', trimmedKey);
+    setShowApiInput(false);
+  };
+
   const handleBaseUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -65,7 +82,6 @@ const App: React.FC = () => {
     reader.readAsDataURL(file);
   };
 
-  // 連続性を解析して「最大ピクセル集合（衣装本体）」以外を消去する
   const filterLargestIsland = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
     const imageData = ctx.getImageData(0, 0, width, height);
     const data = imageData.data;
@@ -103,10 +119,8 @@ const App: React.FC = () => {
         }
       }
     }
-
     if (islands.length === 0) return null;
     const largest = islands.sort((a, b) => b.pixels.length - a.pixels.length)[0];
-
     for (let i = 0; i < data.length; i += 4) {
       const x = (i / 4) % width;
       const y = Math.floor((i / 4) / width);
@@ -114,7 +128,6 @@ const App: React.FC = () => {
         data[i + 3] = 0;
       }
     }
-
     ctx.putImageData(imageData, 0, 0);
     return { x: largest.minX, y: largest.minY, w: largest.maxX - largest.minX + 1, h: largest.maxY - largest.minY + 1 };
   };
@@ -130,11 +143,9 @@ const App: React.FC = () => {
           workCanvas.width = img.width;
           workCanvas.height = img.height;
           workCtx.drawImage(img, 0, 0);
-
           const imageData = workCtx.getImageData(0, 0, img.width, img.height);
           const data = imageData.data;
           const refData = baseSilhouette ? baseSilhouette.data.data : null;
-
           for (let i = 0; i < data.length; i += 4) {
             const r = data[i], g = data[i+1], b = data[i+2];
             let shouldTransparent = false;
@@ -153,9 +164,7 @@ const App: React.FC = () => {
             }
           }
           workCtx.putImageData(imageData, 0, 0);
-
           const tightBox = filterLargestIsland(workCtx, img.width, img.height);
-
           const generateOutput = (targetSize: number, isTightThumbnail: boolean) => {
             const finalCanvas = document.createElement('canvas');
             finalCanvas.width = targetSize;
@@ -163,9 +172,7 @@ const App: React.FC = () => {
             const fCtx = finalCanvas.getContext('2d')!;
             fCtx.imageSmoothingEnabled = true;
             fCtx.imageSmoothingQuality = 'high';
-
             if (!tightBox) return finalCanvas.toDataURL('image/png');
-
             let dw: number, dh: number, dx: number, dy: number, sx: number, sy: number, sw: number, sh: number;
             if (isTightThumbnail) {
               const scale = Math.min(targetSize / tightBox.w, targetSize / tightBox.h);
@@ -178,7 +185,6 @@ const App: React.FC = () => {
               dx = (targetSize - dw) / 2; dy = (targetSize - dh) / 2;
               sx = 0; sy = 0; sw = img.width; sh = img.height;
             }
-
             if (useOutline) {
               const thickness = Math.max(1, Math.round(targetSize / 400));
               fCtx.globalCompositeOperation = 'source-over';
@@ -193,14 +199,11 @@ const App: React.FC = () => {
               fCtx.fillRect(0, 0, targetSize, targetSize);
               fCtx.globalCompositeOperation = 'source-over';
             }
-
             fCtx.drawImage(workCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
             return finalCanvas.toDataURL('image/png');
           };
-
           const originalUrl = generateOutput(2048, false);
           const thumbUrl = generateOutput(1024, true);
-
           resolve({ originalUrl, thumbUrl });
         };
         img.src = e.target?.result as string;
@@ -210,9 +213,13 @@ const App: React.FC = () => {
   };
 
   const suggestFilenameInfo = async (base64: string) => {
+    if (!apiKey) {
+      return { categoryId: "0_未設定", itemName: "APIキーを設定してください" };
+    }
+
     const categoryLabels = CATEGORIES.map(c => c.label).join(", ");
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -237,15 +244,14 @@ const App: React.FC = () => {
           }
         })
       });
+      if (!response.ok) throw new Error("API Request Failed");
       const result = await response.json();
       const parsed = JSON.parse(result.candidates?.[0]?.content?.parts?.[0]?.text || "{}");
-      
       const foundCategory = CATEGORIES.find(c => c.label === parsed.category) || { id: "0_不明", label: "不明" };
       const itemName = (parsed.name || "装備").replace(/[\\/:*?"<>|]/g, "").substring(0, 25);
-      
       return { categoryId: foundCategory.id, itemName };
     } catch { 
-      return { categoryId: "0_不明", itemName: `装備_${Date.now()}` }; 
+      return { categoryId: "0_エラー", itemName: "APIキーが無効またはエラー" }; 
     }
   };
 
@@ -258,49 +264,25 @@ const App: React.FC = () => {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
-    
-    setImages([]); // 新規アップロード時にリストをクリア
+    setImages([]);
     setProcessing(true);
-
     const processedList: ProcessedImage[] = [];
     for (const file of files) {
       const { originalUrl, thumbUrl } = await processImage(file);
       const info = await suggestFilenameInfo(originalUrl);
       const name = buildFilename(info.categoryId, info.itemName);
-      
       processedList.push({ 
         id: crypto.randomUUID(), 
         name, 
         originalUrl, 
-        thumbUrl,
-        categoryId: info.categoryId,
-        itemName: info.itemName
+        thumbUrl, 
+        categoryId: info.categoryId, 
+        itemName: info.itemName 
       });
     }
-    
     setImages(processedList);
     setProcessing(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-
-  const handleCategoryChange = (id: string, newCategoryId: string) => {
-    setImages(prev => prev.map(img => {
-      if (img.id === id) {
-        const newName = buildFilename(newCategoryId, img.itemName);
-        return { ...img, categoryId: newCategoryId, name: newName };
-      }
-      return img;
-    }));
-  };
-
-  const handleNameInputBlur = (id: string, newItemName: string) => {
-    setImages(prev => prev.map(img => {
-      if (img.id === id) {
-        const newName = buildFilename(img.categoryId, newItemName);
-        return { ...img, itemName: newItemName, name: newName };
-      }
-      return img;
-    }));
   };
 
   const downloadFile = (dataUrl: string, filename: string) => {
@@ -319,29 +301,70 @@ const App: React.FC = () => {
       });
   };
 
-  const downloadSet = (img: ProcessedImage) => {
-    downloadFile(img.originalUrl, `${img.name}.png`);
-    setTimeout(() => downloadFile(img.thumbUrl, `${img.name}_サムネ.png`), 350);
-  };
-
-  const downloadAll = () => {
-    images.forEach((img, i) => {
-      const baseDelay = i * 1600;
-      setTimeout(() => downloadFile(img.originalUrl, `${img.name}.png`), baseDelay);
-      setTimeout(() => downloadFile(img.thumbUrl, `${img.name}_サムネ.png`), baseDelay + 600);
-    });
-  };
-
   return (
     <div className="min-h-screen bg-neutral-100 p-4 md:p-8 font-sans text-neutral-900">
       <div className="max-w-5xl mx-auto">
-        <header className="mb-8 flex flex-col items-center">
+        <header className="mb-8 flex flex-col items-center relative">
+          <div className="absolute right-0 top-0">
+            <button 
+              onClick={() => setShowApiInput(!showApiInput)}
+              className={`p-3 rounded-full transition-all shadow-sm ${apiKey ? 'text-green-600 bg-white border border-green-100' : 'text-red-500 bg-red-50 animate-pulse border border-red-200'}`}
+              title={apiKey ? "APIキー設定済み" : "APIキー未設定"}
+            >
+              <Key size={20} />
+            </button>
+          </div>
+
           <div className="bg-white p-4 rounded-3xl shadow-sm mb-4 border border-neutral-200">
             <RefreshCw className={`text-blue-600 w-10 h-10 ${processing ? 'animate-spin' : ''}`} />
           </div>
-          <h1 className="text-3xl font-black tracking-tighter text-neutral-900 underline decoration-blue-500/20">GEAR OUTLINER <span className="text-blue-600 text-lg align-top ml-1 italic">v12</span></h1>
-          <p className="text-neutral-500 font-bold uppercase tracking-widest text-[10px] mt-2 italic tracking-[0.2em]">Interactive Categorizing | 2K Resolution</p>
+          <h1 className="text-3xl font-black tracking-tighter text-neutral-900 underline decoration-blue-500/20">GEAR OUTLINER <span className="text-blue-600 text-lg align-top ml-1 italic">FINAL</span></h1>
+          <p className="text-neutral-500 font-bold uppercase tracking-widest text-[10px] mt-2 italic tracking-[0.2em]">High Res Extraction & Auto-Naming Engine</p>
         </header>
+
+        {/* APIキー入力モーダル風 */}
+        {showApiInput && (
+          <div className="mb-8 bg-white p-6 rounded-[2rem] border-2 border-blue-500 shadow-xl animate-in fade-in zoom-in duration-300">
+            <h3 className="font-black text-sm uppercase tracking-widest mb-2 flex items-center gap-2">
+              <Key size={16} /> Gemini API Key Setting
+            </h3>
+            <p className="text-xs text-neutral-500 mb-4 leading-relaxed">
+              自動命名機能をGitHub等で使用するには、Google AI StudioのAPIキーが必要です。
+              キーはブラウザに保存され、次回のアクセス時も保持されます。
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline ml-1 inline-flex items-center gap-1 font-bold">
+                無料で取得する <ExternalLink size={10} />
+              </a>
+            </p>
+            <div className="flex gap-2">
+              <input 
+                type="password" 
+                placeholder="AIzaSy..." 
+                className="flex-1 bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+              <button 
+                onClick={() => saveApiKey(apiKey)}
+                className="bg-blue-600 text-white px-6 py-2 rounded-xl font-bold text-sm hover:bg-blue-700 transition-colors flex items-center gap-2 shadow-lg active:scale-95"
+              >
+                <Save size={16} /> 保存して閉じる
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!apiKey && !showApiInput && (
+          <div className="mb-8 bg-red-50 border border-red-200 p-4 rounded-2xl flex items-center justify-between shadow-sm animate-in slide-in-from-top duration-500">
+            <div className="flex items-center gap-3 text-red-700">
+              <AlertTriangle size={20} />
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider">APIキーが設定されていません</p>
+                <p className="text-[10px] opacity-70">自動命名機能（カテゴリー分類）を有効にするには設定が必要です。</p>
+              </div>
+            </div>
+            <button onClick={() => setShowApiInput(true)} className="text-[10px] font-black bg-red-700 text-white px-4 py-2 rounded-full uppercase shadow-md active:scale-95">設定を開く</button>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
           <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-neutral-200">
@@ -359,7 +382,7 @@ const App: React.FC = () => {
               ) : (
                 <div className="text-center p-4">
                   <ImageIcon className="mx-auto text-neutral-300 mb-2" size={32} />
-                  <p className="text-[10px] font-black text-neutral-400 uppercase tracking-tighter">ドールシルエット</p>
+                  <p className="text-[10px] font-black text-neutral-400 uppercase tracking-tighter text-center leading-tight">着せ替えドール<br/>シルエット</p>
                 </div>
               )}
             </div>
@@ -373,7 +396,7 @@ const App: React.FC = () => {
               </h3>
               <label className="flex items-center gap-2 cursor-pointer bg-neutral-50 px-4 py-2 rounded-full border border-neutral-200 hover:bg-neutral-100 transition-all shadow-sm">
                 <input type="checkbox" checked={useOutline} onChange={(e) => setUseOutline(e.target.checked)} className="rounded text-blue-600 focus:ring-blue-500" />
-                <span className="text-[10px] font-black uppercase tracking-wider">黒縁補正で輪郭を保護</span>
+                <span className="text-[10px] font-black uppercase tracking-wider">黒縁補正を有効化</span>
               </label>
             </div>
             <div 
@@ -384,13 +407,13 @@ const App: React.FC = () => {
               {processing ? (
                 <div className="flex flex-col items-center gap-4">
                   <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
-                  <p className="font-black text-blue-600 tracking-tighter text-lg animate-pulse uppercase text-center px-4">AI Categorizing & Processing...</p>
+                  <p className="font-black text-blue-600 tracking-tighter text-lg animate-pulse uppercase text-center px-4">AI Analyzing & Processing...</p>
                 </div>
               ) : (
                 <div className="text-center">
                   <Upload className="mx-auto text-blue-400 mb-3" size={40} />
-                  <p className="text-xl font-black tracking-tight text-neutral-800">衣装をアップロードして分類</p>
-                  <p className="text-neutral-400 text-[10px] font-black uppercase tracking-widest mt-1">※アップロードすると以前のリストはクリアされます</p>
+                  <p className="text-xl font-black tracking-tight text-neutral-800">衣装画像をドロップ</p>
+                  <p className="text-neutral-400 text-[10px] font-black uppercase tracking-widest mt-1 italic tracking-[0.1em]">アップロードで既存リストを上書き</p>
                 </div>
               )}
             </div>
@@ -398,44 +421,49 @@ const App: React.FC = () => {
         </div>
 
         {images.length > 0 && (
-          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
             <div className="flex justify-between items-center px-4">
               <h2 className="font-black text-2xl uppercase tracking-tighter text-blue-600 flex items-center gap-2">
-                <Sparkles size={24} /> Inventories
+                <Sparkles size={24} /> Results
               </h2>
-              <button onClick={downloadAll} className="bg-blue-600 hover:bg-blue-700 text-white px-10 py-4 rounded-3xl font-black shadow-xl shadow-blue-200 transition-all active:scale-95 flex items-center gap-2 uppercase tracking-tighter">
+              <button 
+                onClick={() => {
+                  images.forEach((img, i) => {
+                    const delay = i * 1600;
+                    setTimeout(() => downloadFile(img.originalUrl, `${img.name}.png`), delay);
+                    setTimeout(() => downloadFile(img.thumbUrl, `${img.name}_サムネ.png`), delay + 600);
+                  });
+                }} 
+                className="bg-blue-600 hover:bg-blue-700 text-white px-10 py-4 rounded-3xl font-black shadow-xl shadow-blue-200 transition-all active:scale-95 flex items-center gap-2 uppercase tracking-tighter"
+              >
                 <Download size={24} /> Export All (2K)
               </button>
             </div>
 
-            <div className="grid gap-8 pb-20">
+            <div className="grid gap-8">
               {images.map((img) => (
-                <div key={img.id} className="bg-white rounded-[3rem] p-8 shadow-sm border border-neutral-200 flex flex-col lg:flex-row items-center gap-10 hover:shadow-lg transition-all relative">
+                <div key={img.id} className="bg-white rounded-[3rem] p-8 shadow-sm border border-neutral-200 flex flex-col lg:flex-row items-center gap-10 hover:shadow-lg transition-all">
                   <div className="flex gap-6">
-                    <div className="relative group">
-                      <div className="w-56 h-56 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-neutral-100 rounded-3xl overflow-hidden flex items-center justify-center border-4 border-neutral-50 shadow-inner p-2">
-                        <img src={img.originalUrl} className="max-w-full max-h-full object-contain" alt="Original" />
-                      </div>
-                      <span className="absolute -top-3 -left-3 bg-neutral-900 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest">2048px</span>
+                    <div className="w-56 h-56 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-neutral-100 rounded-3xl overflow-hidden flex items-center justify-center border-4 border-neutral-50 shadow-inner p-2">
+                      <img src={img.originalUrl} className="max-w-full max-h-full object-contain" alt="Original" />
                     </div>
-                    <div className="relative group">
-                      <div className="w-48 h-48 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-blue-50 rounded-3xl overflow-hidden flex items-center justify-center border-4 border-blue-500/20 shadow-inner p-1">
-                        <img src={img.thumbUrl} className="max-w-full max-h-full object-contain" alt="Thumb" />
-                      </div>
-                      <span className="absolute -top-3 -right-3 bg-blue-600 text-white text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-widest">1024px Tight</span>
+                    <div className="w-48 h-48 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-blue-50 rounded-3xl overflow-hidden flex items-center justify-center border-4 border-blue-500/20 shadow-inner p-1">
+                      <img src={img.thumbUrl} className="max-w-full max-h-full object-contain" alt="Thumb" />
                     </div>
                   </div>
                   
                   <div className="flex-1 min-w-0 w-full space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* カテゴリーセレクター */}
                       <div className="bg-neutral-50 p-4 rounded-2xl border border-neutral-100 focus-within:border-blue-400 transition-all shadow-inner">
-                        <label className="text-[10px] font-black text-neutral-400 uppercase mb-2 block tracking-widest italic flex items-center gap-1">
-                          Category <ChevronDown size={10} />
-                        </label>
+                        <label className="text-[10px] font-black text-neutral-400 uppercase mb-2 block tracking-widest italic flex items-center gap-1">Category <ChevronDown size={10} /></label>
                         <select 
                           value={img.categoryId}
-                          onChange={(e) => handleCategoryChange(img.id, e.target.value)}
+                          onChange={(e) => {
+                            const newCat = e.target.value;
+                            const isAcc = newCat.includes("アクセサリー");
+                            const newName = `${newCat}${isAcc ? "_overlap" : ""}_${img.itemName}`;
+                            setImages(images.map(i => i.id === img.id ? { ...i, categoryId: newCat, name: newName } : i));
+                          }}
                           className="w-full bg-transparent border-none font-bold text-lg outline-none text-neutral-900 appearance-none cursor-pointer"
                         >
                           {CATEGORIES.map(cat => (
@@ -444,27 +472,33 @@ const App: React.FC = () => {
                         </select>
                       </div>
 
-                      {/* 詳細名入力 */}
                       <div className="bg-neutral-50 p-4 rounded-2xl border border-neutral-100 focus-within:border-blue-400 transition-all shadow-inner">
                         <label className="text-[10px] font-black text-neutral-400 uppercase mb-2 block tracking-widest italic">Item Detail Name</label>
                         <input 
                           type="text" 
                           defaultValue={img.itemName}
-                          onBlur={(e) => handleNameInputBlur(img.id, e.target.value)}
+                          onBlur={(e) => {
+                            const newDetail = e.target.value;
+                            const isAcc = img.categoryId.includes("アクセサリー");
+                            const newName = `${img.categoryId}${isAcc ? "_overlap" : ""}_${newDetail}`;
+                            setImages(images.map(i => i.id === img.id ? { ...i, itemName: newDetail, name: newName } : i));
+                          }}
                           className="w-full bg-transparent border-none font-bold text-lg outline-none text-neutral-900 tracking-tight"
                         />
                       </div>
                     </div>
 
-                    {/* プレビューファイル名 */}
                     <div className="bg-neutral-100/50 p-3 rounded-xl border border-neutral-200">
-                      <p className="text-[9px] font-black text-neutral-400 uppercase mb-1 tracking-widest">Preview Full Filename</p>
+                      <p className="text-[9px] font-black text-neutral-400 uppercase mb-1 tracking-widest">Final Filename</p>
                       <p className="text-xs font-mono text-neutral-500 truncate">{img.name}.png</p>
                     </div>
 
                     <div className="flex gap-4">
                       <button 
-                        onClick={() => downloadSet(img)} 
+                        onClick={() => {
+                          downloadFile(img.originalUrl, `${img.name}.png`);
+                          setTimeout(() => downloadFile(img.thumbUrl, `${img.name}_サムネ.png`), 350);
+                        }} 
                         className="flex-1 bg-neutral-900 text-white py-5 rounded-[1.5rem] text-[12px] font-black hover:bg-black transition-all uppercase tracking-[0.3em] shadow-lg active:scale-95 flex items-center justify-center gap-2"
                       >
                         <Download size={20} /> Download Set
