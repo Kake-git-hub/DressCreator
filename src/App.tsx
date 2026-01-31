@@ -6,8 +6,8 @@ import {
   Key,
   Loader2,
   Save,
-  Scissors,
   Sliders,
+  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -61,6 +61,8 @@ const CATEGORIES: Category[] = [
   { id: '12_10_アクセサリー', label: 'アクセサリー' },
   { id: '13_11_エフェクト', label: 'エフェクト' },
 ];
+
+const CHECKERBOARD_URL = 'https://www.transparenttextures.com/patterns/checkerboard.png';
 
 const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>('');
@@ -190,7 +192,6 @@ const App: React.FC = () => {
           const px = i % width;
           const py = (i / width) | 0;
 
-          // 強制ウォーターマーク除去 (右下8%)
           if (px > width * 0.92 && py > height * 0.92) {
             data[i * 4 + 3] = 0;
             continue;
@@ -297,10 +298,17 @@ const App: React.FC = () => {
     });
   };
 
+  const stripCodeFences = (text: string): string =>
+    text
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
   const suggestFilename = async (dataUrl: string, imgId: string): Promise<void> => {
     if (!apiKey) return;
 
-    const modelName = 'gemini-1.5-flash';
+    const modelName = 'gemini-2.5-flash-preview-09-2025';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
     const fetchWithRetry = async (retries = 5, delay = 1000): Promise<void> => {
@@ -308,31 +316,46 @@ const App: React.FC = () => {
         const base64 = dataUrl.split(',')[1];
         if (!base64) throw new Error('Invalid data URL');
 
+        const payload = {
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `衣服の画像分析。カテゴリ：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選び、具体的でユニークな日本語名を提案。JSON形式: {"category": "...", "name": "..."}`,
+                },
+                { inlineData: { mimeType: 'image/png', data: base64 } },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: 'OBJECT',
+              properties: {
+                category: { type: 'STRING' },
+                name: { type: 'STRING' },
+              },
+              required: ['category', 'name'],
+            },
+          },
+        };
+
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `衣服の画像分析。カテゴリ：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選び、具体的でユニークな日本語名を提案。JSON形式: {"category": "...", "name": "..."}`,
-                  },
-                  { inlineData: { mimeType: 'image/png', data: base64 } },
-                ],
-              },
-            ],
-            generationConfig: { responseMimeType: 'application/json' },
-          }),
+          body: JSON.stringify(payload),
         });
 
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const result = (await response.json()) as GeminiJsonResponse;
-        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!text) throw new Error('Empty response from AI');
+        const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!rawText) throw new Error('Empty response');
 
-        const parsed = JSON.parse(text) as { category?: string; name?: string };
+        const cleanJson = stripCodeFences(rawText);
+        const parsed = JSON.parse(cleanJson) as { category?: string; name?: string };
+
         const foundCategory = CATEGORIES.find((c) => c.label === parsed.category) ?? {
           id: '4_2_ドレス',
           label: 'ドレス',
@@ -357,7 +380,6 @@ const App: React.FC = () => {
           return fetchWithRetry(retries - 1, delay * 2);
         }
 
-        console.error('Naming failed after retries:', e);
         setImages((prev) =>
           prev.map((img) =>
             img.id === imgId
@@ -392,7 +414,7 @@ const App: React.FC = () => {
         tolerance: 50,
         erosion: 0,
         categoryId: '4_2_ドレス',
-        itemName: '解析中...',
+        itemName: apiKey ? '解析中...' : '装備アイテム',
         isNaming: Boolean(apiKey),
       };
 
@@ -404,10 +426,7 @@ const App: React.FC = () => {
       };
 
       setImages((prev) => [finalItem, ...prev]);
-
-      if (apiKey) {
-        void suggestFilename(result.originalUrl, id);
-      }
+      if (apiKey) void suggestFilename(result.originalUrl, id);
     }
 
     setProcessing(false);
@@ -460,7 +479,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-stone-100 p-4 md:p-8 font-sans text-stone-900 select-none">
-      {/* --- 精密調整モーダル --- */}
+      {/* 調整モーダル */}
       {adjustingItem && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-stone-900/95 backdrop-blur-sm animate-in fade-in duration-200"
@@ -470,14 +489,16 @@ const App: React.FC = () => {
             className="relative flex flex-col md:flex-row items-center gap-6 max-w-7xl w-full h-full justify-center"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex-1 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-stone-50 rounded-[3rem] overflow-hidden flex items-center justify-center border-4 border-white/10 shadow-2xl h-full max-h-[85vh]">
+            <div
+              className="flex-1 bg-stone-50 rounded-[3rem] overflow-hidden flex items-center justify-center border-4 border-white/10 shadow-2xl h-full max-h-[85vh]"
+              style={{ backgroundImage: `url('${CHECKERBOARD_URL}')` }}
+            >
               <img
                 src={adjustingItem.originalUrl}
                 className="max-w-full max-h-full object-contain"
                 alt="Adjustment View"
               />
             </div>
-
             <div className="flex flex-col gap-6 bg-black/40 backdrop-blur-xl p-3 py-6 rounded-full border border-white/5 shadow-2xl items-center">
               <div className="flex flex-col items-center relative">
                 <span className="text-white font-black text-[9px] bg-blue-500/80 px-2 rounded-full mb-1">
@@ -497,9 +518,7 @@ const App: React.FC = () => {
                 </div>
                 <label className="text-[7px] font-black uppercase text-stone-300 mt-1">Sense</label>
               </div>
-
               <div className="w-6 h-px bg-white/10" />
-
               <div className="flex flex-col items-center relative">
                 <span className="text-white font-black text-[9px] bg-rose-500/80 px-2 rounded-full mb-1">
                   {adjustingItem.erosion}px
@@ -516,7 +535,6 @@ const App: React.FC = () => {
                 </div>
                 <label className="text-[7px] font-black uppercase text-stone-300 mt-1">Edge</label>
               </div>
-
               <button
                 onClick={() => setAdjustingItem(null)}
                 className="w-10 h-10 rounded-full bg-white/90 text-stone-900 flex items-center justify-center shadow-xl hover:bg-green-500 hover:text-white transition-all active:scale-90"
@@ -541,13 +559,13 @@ const App: React.FC = () => {
             </button>
           </div>
           <div className="bg-white p-4 rounded-full shadow-lg mb-2 border border-stone-200">
-            <Scissors className="text-blue-600 w-6 h-6" />
+            <Sparkles className="text-blue-600 w-6 h-6" />
           </div>
           <h1 className="text-xl font-black uppercase italic tracking-tighter">
-            Gear Clipper <span className="text-blue-600">v46</span>
+            Gear Clipper <span className="text-blue-600">v47</span>
           </h1>
           <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1 italic">
-            Robust AI-Naming &amp; Global Compatibility
+            Fast AI-2.5 &amp; Smart Naming
           </p>
         </header>
 
@@ -636,7 +654,10 @@ const App: React.FC = () => {
                   <div className="absolute left-0 top-0 h-full w-1 bg-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
 
                   <div className="flex-shrink-0">
-                    <div className="w-14 h-14 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-stone-50 rounded-lg overflow-hidden border border-stone-100 flex items-center justify-center">
+                    <div
+                      className="w-14 h-14 bg-stone-50 rounded-lg overflow-hidden border border-stone-100 flex items-center justify-center"
+                      style={{ backgroundImage: `url('${CHECKERBOARD_URL}')` }}
+                    >
                       <img src={img.thumbUrl} className="max-w-full max-h-full object-contain" alt="Thumb" />
                     </div>
                   </div>
@@ -655,7 +676,6 @@ const App: React.FC = () => {
                         ))}
                       </select>
                     </div>
-
                     <div className="col-span-4 relative">
                       <input
                         type="text"
@@ -671,7 +691,6 @@ const App: React.FC = () => {
                         />
                       )}
                     </div>
-
                     <div className="col-span-3">
                       <div className="bg-stone-50 px-2 py-1.5 rounded border border-stone-100 truncate">
                         <p className="font-mono text-stone-400 truncate uppercase tracking-tighter italic">
@@ -679,7 +698,6 @@ const App: React.FC = () => {
                         </p>
                       </div>
                     </div>
-
                     <div className="col-span-2 flex justify-end gap-1.5">
                       <button
                         onClick={() => setAdjustingItem(img)}
