@@ -207,6 +207,10 @@ const App: React.FC = () => {
         const islandVisited = new Uint8Array(totalPixels);
         const finalMask = new Uint8Array(totalPixels);
         const islandStack = new Uint32Array(totalPixels);
+        let minX = width;
+        let minY = height;
+        let maxX = 0;
+        let maxY = 0;
         let foundAny = false;
 
         for (let i = 0; i < totalPixels; i++) {
@@ -234,7 +238,15 @@ const App: React.FC = () => {
             }
 
             if (island.length > 50) {
-              island.forEach((p) => (finalMask[p] = 1));
+              island.forEach((p) => {
+                finalMask[p] = 1;
+                const px = p % width;
+                const py = (p / width) | 0;
+                if (px < minX) minX = px;
+                if (px > maxX) maxX = px;
+                if (py < minY) minY = py;
+                if (py > maxY) maxY = py;
+              });
               foundAny = true;
             }
           }
@@ -243,8 +255,10 @@ const App: React.FC = () => {
         for (let i = 0; i < totalPixels; i++) if (finalMask[i] === 0) data[i * 4 + 3] = 0;
         workCtx.putImageData(imageData, 0, 0);
 
-        // --- 出力生成: 位置をずらさないように元の構図を維持 ---
-        const generateOutput = (targetSize: number): string => {
+        const tightBox = foundAny ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 } : null;
+
+        // --- 出力生成: オリジナルは位置同期、サムネイルはトリミング(密着) ---
+        const generateOutput = (targetSize: number, isTight: boolean): string => {
           const finalCanvas = document.createElement('canvas');
           finalCanvas.width = targetSize;
           finalCanvas.height = targetSize;
@@ -254,18 +268,27 @@ const App: React.FC = () => {
 
           if (!foundAny) return finalCanvas.toDataURL('image/png');
 
-          // アスペクト比を維持して中央配置 (トリミングなし)
-          const scale = Math.min(targetSize / width, targetSize / height);
-          const dw = width * scale;
-          const dh = height * scale;
-          const dx = (targetSize - dw) / 2;
-          const dy = (targetSize - dh) / 2;
-
-          fCtx.drawImage(workCanvas, 0, 0, width, height, dx, dy, dw, dh);
+          if (isTight && tightBox) {
+            // サムネイル用: タイトにトリミング
+            const scale = Math.min(targetSize / tightBox.w, targetSize / tightBox.h);
+            const dw = tightBox.w * scale;
+            const dh = tightBox.h * scale;
+            const dx = (targetSize - dw) / 2;
+            const dy = (targetSize - dh) / 2;
+            fCtx.drawImage(workCanvas, tightBox.x, tightBox.y, tightBox.w, tightBox.h, dx, dy, dw, dh);
+          } else {
+            // オリジナル用: 元の構図(位置)を維持
+            const scale = Math.min(targetSize / width, targetSize / height);
+            const dw = width * scale;
+            const dh = height * scale;
+            const dx = (targetSize - dw) / 2;
+            const dy = (targetSize - dh) / 2;
+            fCtx.drawImage(workCanvas, 0, 0, width, height, dx, dy, dw, dh);
+          }
           return finalCanvas.toDataURL('image/png');
         };
 
-        resolve({ originalUrl: generateOutput(2048), thumbUrl: generateOutput(1024) });
+        resolve({ originalUrl: generateOutput(2048, false), thumbUrl: generateOutput(1024, true) });
       };
 
       img.src = imgDataObj.sourceUrl;
@@ -501,10 +524,10 @@ const App: React.FC = () => {
             <Scissors className="text-blue-600 w-6 h-6" />
           </div>
           <h1 className="text-xl font-black uppercase italic tracking-tighter">
-            Gear Clipper <span className="text-blue-600">v51</span>
+            Gear Clipper <span className="text-blue-600">v51.1</span>
           </h1>
           <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1 italic">
-            Position Sync &amp; High-Speed Naming
+            Position Sync &amp; Tight Thumbnail
           </p>
         </header>
 
