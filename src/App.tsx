@@ -5,6 +5,7 @@ import {
   Image as ImageIcon,
   Key,
   Loader2,
+  Save,
   Scissors,
   Sliders,
   Trash2,
@@ -39,6 +40,16 @@ interface ImageItem extends ProcessResult {
   isNaming?: boolean;
 }
 
+type GeminiJsonResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+};
+
 const CATEGORIES: Category[] = [
   { id: '1_4_インナー', label: 'インナー' },
   { id: '2_7_くつ', label: 'くつ' },
@@ -50,16 +61,6 @@ const CATEGORIES: Category[] = [
   { id: '12_10_アクセサリー', label: 'アクセサリー' },
   { id: '13_11_エフェクト', label: 'エフェクト' },
 ];
-
-type GeminiJsonResponse = {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
-    };
-  }>;
-};
 
 const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>('');
@@ -91,6 +92,7 @@ const App: React.FC = () => {
   const applyErosion = (mask: Uint8Array, width: number, height: number, size: number): Uint8Array => {
     if (size <= 0) return mask;
     let currentMask = new Uint8Array(mask);
+
     for (let s = 0; s < size; s++) {
       const nextMask = new Uint8Array(currentMask);
       for (let y = 1; y < height - 1; y++) {
@@ -110,6 +112,7 @@ const App: React.FC = () => {
       }
       currentMask = nextMask;
     }
+
     return currentMask;
   };
 
@@ -117,6 +120,7 @@ const App: React.FC = () => {
     return new Promise((resolve) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
+
       img.onload = () => {
         const workCanvas = document.createElement('canvas');
         workCanvas.width = img.width;
@@ -134,7 +138,6 @@ const App: React.FC = () => {
         const height = img.height;
         const totalPixels = width * height;
 
-        // 背景色のサンプリング
         const cornerIdx = [0, (width - 1) * 4, (height - 1) * width * 4, (totalPixels - 1) * 4];
         const samples = cornerIdx.map((idx) => ({ r: data[idx], g: data[idx + 1], b: data[idx + 2] }));
         const avgBG = {
@@ -146,7 +149,6 @@ const App: React.FC = () => {
         const tol = imgDataObj.tolerance ?? 50;
         const erosionSize = imgDataObj.erosion ?? 0;
 
-        // Flood Fill BFS (外側から繋がっている背景を特定)
         const isBackground = new Uint8Array(totalPixels);
         const visited = new Uint8Array(totalPixels);
         const stack = new Uint32Array(totalPixels);
@@ -207,7 +209,6 @@ const App: React.FC = () => {
 
         workCtx.putImageData(imageData, 0, 0);
 
-        // 島抽出 BFS (ゴミ取り)
         const islandVisited = new Uint8Array(totalPixels);
         const finalMask = new Uint8Array(totalPixels);
         const islandStack = new Uint32Array(totalPixels);
@@ -222,13 +223,14 @@ const App: React.FC = () => {
             let iPtr = 0;
             islandStack[iPtr++] = i;
             islandVisited[i] = 1;
-
             const island: number[] = [];
+
             while (iPtr > 0) {
               const idx = islandStack[--iPtr];
               island.push(idx);
               const x = idx % width;
               const neighbors = [idx - width, idx + width, idx - 1, idx + 1];
+
               for (const ni of neighbors) {
                 if (ni >= 0 && ni < totalPixels && islandVisited[ni] === 0 && data[ni * 4 + 3] > 20) {
                   const nx = ni % width;
@@ -283,6 +285,7 @@ const App: React.FC = () => {
           const sy = isTight ? tightBox.y : 0;
           const sw = isTight ? tightBox.w : width;
           const sh = isTight ? tightBox.h : height;
+
           fCtx.drawImage(workCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
           return finalCanvas.toDataURL('image/png');
         };
@@ -294,30 +297,18 @@ const App: React.FC = () => {
     });
   };
 
-  const extractJsonFromModelText = (text: string): unknown => {
-    try {
-      return JSON.parse(text);
-    } catch {
-      const start = text.indexOf('{');
-      const end = text.lastIndexOf('}');
-      if (start >= 0 && end > start) {
-        const candidate = text.slice(start, end + 1);
-        return JSON.parse(candidate);
-      }
-      throw new Error('Invalid JSON');
-    }
-  };
-
   const suggestFilename = async (dataUrl: string, imgId: string): Promise<void> => {
     if (!apiKey) return;
 
-    try {
-      const base64 = dataUrl.split(',')[1];
-      if (!base64) throw new Error('Invalid data URL');
+    const modelName = 'gemini-1.5-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
-        {
+    const fetchWithRetry = async (retries = 5, delay = 1000): Promise<void> => {
+      try {
+        const base64 = dataUrl.split(',')[1];
+        if (!base64) throw new Error('Invalid data URL');
+
+        const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -325,7 +316,7 @@ const App: React.FC = () => {
               {
                 parts: [
                   {
-                    text: `衣服の画像分析。カテゴリ：[${CATEGORIES.map((c) => c.label).join(", ")}]から1つ選び、具体的でユニークな日本語名を提案。JSON: {"category": "...", "name": "..."}`,
+                    text: `衣服の画像分析。カテゴリ：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選び、具体的でユニークな日本語名を提案。JSON形式: {"category": "...", "name": "..."}`,
                   },
                   { inlineData: { mimeType: 'image/png', data: base64 } },
                 ],
@@ -333,47 +324,56 @@ const App: React.FC = () => {
             ],
             generationConfig: { responseMimeType: 'application/json' },
           }),
-        },
-      );
+        });
 
-      const result = (await response.json()) as GeminiJsonResponse;
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error('No candidates');
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
 
-      const parsed = extractJsonFromModelText(text) as { category?: string; name?: string };
-      const foundCategory = CATEGORIES.find((c) => c.label === parsed.category) ?? {
-        id: '4_2_ドレス',
-        label: 'ドレス',
-      };
-      const itemName = String(parsed.name || '新装備').substring(0, 25);
+        const result = (await response.json()) as GeminiJsonResponse;
+        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error('Empty response from AI');
 
-      setImages((prev) =>
-        prev.map((img) => {
-          if (img.id !== imgId) return img;
-          return {
-            ...img,
-            categoryId: foundCategory.id,
-            itemName,
-            name: generateFullFilename(foundCategory.id, itemName),
-            isNaming: false,
-          };
-        }),
-      );
-    } catch (e) {
-      console.error(e);
-      setImages((prev) =>
-        prev.map((img) =>
-          img.id === imgId
-            ? {
-                ...img,
-                isNaming: false,
-                itemName: '解析失敗',
-                name: generateFullFilename(img.categoryId, '解析失敗'),
-              }
-            : img,
-        ),
-      );
-    }
+        const parsed = JSON.parse(text) as { category?: string; name?: string };
+        const foundCategory = CATEGORIES.find((c) => c.label === parsed.category) ?? {
+          id: '4_2_ドレス',
+          label: 'ドレス',
+        };
+        const itemName = String(parsed.name || '新装備').substring(0, 25);
+
+        setImages((prev) =>
+          prev.map((img) => {
+            if (img.id !== imgId) return img;
+            return {
+              ...img,
+              categoryId: foundCategory.id,
+              itemName,
+              name: generateFullFilename(foundCategory.id, itemName),
+              isNaming: false,
+            };
+          }),
+        );
+      } catch (e) {
+        if (retries > 0) {
+          await new Promise<void>((res) => setTimeout(res, delay));
+          return fetchWithRetry(retries - 1, delay * 2);
+        }
+
+        console.error('Naming failed after retries:', e);
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === imgId
+              ? {
+                  ...img,
+                  isNaming: false,
+                  itemName: '解析失敗',
+                  name: generateFullFilename(img.categoryId, '解析失敗'),
+                }
+              : img,
+          ),
+        );
+      }
+    };
+
+    return fetchWithRetry();
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
@@ -381,6 +381,7 @@ const App: React.FC = () => {
     if (files.length === 0) return;
 
     setProcessing(true);
+
     for (const file of files) {
       const sourceUrl = URL.createObjectURL(file);
       const id = crypto.randomUUID();
@@ -391,7 +392,7 @@ const App: React.FC = () => {
         tolerance: 50,
         erosion: 0,
         categoryId: '4_2_ドレス',
-        itemName: apiKey ? '解析中...' : '装備アイテム',
+        itemName: '解析中...',
         isNaming: Boolean(apiKey),
       };
 
@@ -543,28 +544,33 @@ const App: React.FC = () => {
             <Scissors className="text-blue-600 w-6 h-6" />
           </div>
           <h1 className="text-xl font-black uppercase italic tracking-tighter">
-            Gear Clipper <span className="text-blue-600">v45</span>
+            Gear Clipper <span className="text-blue-600">v46</span>
           </h1>
           <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1 italic">
-            Auto-Naming &amp; Stable Processing
+            Robust AI-Naming &amp; Global Compatibility
           </p>
         </header>
 
         {showApiInput && (
           <div className="mb-8 bg-white p-6 rounded-3xl border-2 border-blue-500 shadow-xl animate-in fade-in zoom-in duration-300">
-            <input
-              type="password"
-              placeholder="Gemini API Key..."
-              className="w-full bg-stone-50 border rounded-xl px-4 py-3 text-sm outline-none mb-3"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-            <button
-              onClick={() => saveApiKey(apiKey)}
-              className="w-full bg-blue-600 text-white py-2 rounded-xl font-bold"
-            >
-              保存
-            </button>
+            <h3 className="font-black text-xs uppercase tracking-widest mb-4 flex items-center gap-2 text-blue-600 italic underline decoration-blue-600/30">
+              Gemini API Key Setting
+            </h3>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                placeholder="AIzaSy..."
+                className="flex-1 bg-stone-50 border border-stone-200 rounded-2xl px-4 py-3 text-sm outline-none focus:border-blue-500 font-mono"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+              <button
+                onClick={() => saveApiKey(apiKey)}
+                className="bg-blue-600 text-white px-8 py-2 rounded-2xl font-black text-sm hover:bg-black transition-all shadow-lg active:scale-95 flex items-center gap-2"
+              >
+                <Save size={18} /> 保存
+              </button>
+            </div>
           </div>
         )}
 
