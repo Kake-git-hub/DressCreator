@@ -6,30 +6,30 @@ import {
   Key,
   Loader2,
   Save,
+  Scissors,
   Sliders,
-  Sparkles,
   Trash2,
   Upload,
 } from 'lucide-react';
 
-interface Category {
+type Category = {
   id: string;
   label: string;
-}
+};
 
-interface ProcessResult {
+type ProcessResult = {
   originalUrl: string;
   thumbUrl: string;
-}
+};
 
-interface BoundingBox {
+type BoundingBox = {
   x: number;
   y: number;
   w: number;
   h: number;
-}
+};
 
-interface ImageItem extends ProcessResult {
+type ImageItem = {
   id: string;
   sourceUrl: string;
   tolerance: number;
@@ -37,10 +37,12 @@ interface ImageItem extends ProcessResult {
   categoryId: string;
   itemName: string;
   name: string;
-  isNaming?: boolean;
-}
+  isNaming: boolean;
+  originalUrl: string;
+  thumbUrl: string;
+};
 
-type GeminiJsonResponse = {
+type GeminiResponse = {
   candidates?: Array<{
     content?: {
       parts?: Array<{
@@ -71,7 +73,7 @@ const App: React.FC = () => {
   const [processing, setProcessing] = useState<boolean>(false);
   const [isDeletingAll, setIsDeletingAll] = useState<boolean>(false);
   const [adjustingItem, setAdjustingItem] = useState<ImageItem | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const savedKey = localStorage.getItem('user_gemini_api_key');
@@ -118,7 +120,9 @@ const App: React.FC = () => {
     return currentMask;
   };
 
-  const processImage = async (imgDataObj: Pick<ImageItem, 'sourceUrl' | 'tolerance' | 'erosion'>): Promise<ProcessResult> => {
+  const processImage = async (
+    imgDataObj: Pick<ImageItem, 'sourceUrl' | 'tolerance' | 'erosion'>,
+  ): Promise<ProcessResult> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -298,104 +302,78 @@ const App: React.FC = () => {
     });
   };
 
-  const stripCodeFences = (text: string): string =>
-    text
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
   const suggestFilename = async (dataUrl: string, imgId: string): Promise<void> => {
     if (!apiKey) return;
 
-    const modelName = 'gemini-2.5-flash-preview-09-2025';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    const model = 'gemini-2.5-flash-preview-09-2025';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    const fetchWithRetry = async (retries = 5, delay = 1000): Promise<void> => {
+    const tryFetch = async (retries = 3): Promise<void> => {
       try {
         const base64 = dataUrl.split(',')[1];
         if (!base64) throw new Error('Invalid data URL');
 
-        const payload = {
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                {
-                  text: `衣服の画像分析。カテゴリ：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選び、具体的でユニークな日本語名を提案。JSON形式: {"category": "...", "name": "..."}`,
-                },
-                { inlineData: { mimeType: 'image/png', data: base64 } },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: 'OBJECT',
-              properties: {
-                category: { type: 'STRING' },
-                name: { type: 'STRING' },
-              },
-              required: ['category', 'name'],
-            },
-          },
-        };
-
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `分析：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選択。具体的でユニークな日本語名を考案。JSON形式 {"category": "カテゴリ名", "name": "日本語名"} で出力。余計な文字は一切含めない。`,
+                  },
+                  { inlineData: { mimeType: 'image/png', data: base64 } },
+                ],
+              },
+            ],
+          }),
         });
 
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error('API Error');
 
-        const result = (await response.json()) as GeminiJsonResponse;
+        const result = (await response.json()) as GeminiResponse;
         const rawText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!rawText) throw new Error('Empty response');
+        if (!rawText) throw new Error('No Text');
 
-        const cleanJson = stripCodeFences(rawText);
-        const parsed = JSON.parse(cleanJson) as { category?: string; name?: string };
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('JSON not found');
 
-        const foundCategory = CATEGORIES.find((c) => c.label === parsed.category) ?? {
-          id: '4_2_ドレス',
-          label: 'ドレス',
-        };
+        const parsed = JSON.parse(jsonMatch[0]) as { category?: string; name?: string };
+        const foundCategory =
+          CATEGORIES.find((c) => c.label === parsed.category) ?? { id: '4_2_ドレス', label: 'ドレス' };
         const itemName = String(parsed.name || '新装備').substring(0, 25);
-
-        setImages((prev) =>
-          prev.map((img) => {
-            if (img.id !== imgId) return img;
-            return {
-              ...img,
-              categoryId: foundCategory.id,
-              itemName,
-              name: generateFullFilename(foundCategory.id, itemName),
-              isNaming: false,
-            };
-          }),
-        );
-      } catch (e) {
-        if (retries > 0) {
-          await new Promise<void>((res) => setTimeout(res, delay));
-          return fetchWithRetry(retries - 1, delay * 2);
-        }
 
         setImages((prev) =>
           prev.map((img) =>
             img.id === imgId
               ? {
                   ...img,
+                  categoryId: foundCategory.id,
+                  itemName,
+                  name: generateFullFilename(foundCategory.id, itemName),
                   isNaming: false,
-                  itemName: '解析失敗',
-                  name: generateFullFilename(img.categoryId, '解析失敗'),
                 }
+              : img,
+          ),
+        );
+      } catch {
+        if (retries > 0) {
+          await new Promise<void>((r) => setTimeout(r, 1500));
+          return tryFetch(retries - 1);
+        }
+
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === imgId
+              ? { ...img, isNaming: false, itemName: '解析失敗', name: generateFullFilename(img.categoryId, '解析失敗') }
               : img,
           ),
         );
       }
     };
 
-    return fetchWithRetry();
+    return tryFetch();
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
@@ -408,13 +386,13 @@ const App: React.FC = () => {
       const sourceUrl = URL.createObjectURL(file);
       const id = crypto.randomUUID();
 
-      const initialObj: Omit<ImageItem, keyof ProcessResult | 'name'> = {
+      const initialObj: Omit<ImageItem, 'originalUrl' | 'thumbUrl' | 'name'> = {
         id,
         sourceUrl,
         tolerance: 50,
         erosion: 0,
         categoryId: '4_2_ドレス',
-        itemName: apiKey ? '解析中...' : '装備アイテム',
+        itemName: '解析中...',
         isNaming: Boolean(apiKey),
       };
 
@@ -450,22 +428,10 @@ const App: React.FC = () => {
   };
 
   const downloadFile = (url: string, filename: string): void => {
-    fetch(url)
-      .then((res) => res.blob())
-      .then((blob) => {
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(blobUrl);
-      })
-      .catch(() => {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-      });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
   };
 
   const downloadAll = (): void => {
@@ -559,13 +525,13 @@ const App: React.FC = () => {
             </button>
           </div>
           <div className="bg-white p-4 rounded-full shadow-lg mb-2 border border-stone-200">
-            <Sparkles className="text-blue-600 w-6 h-6" />
+            <Scissors className="text-blue-600 w-6 h-6" />
           </div>
           <h1 className="text-xl font-black uppercase italic tracking-tighter">
-            Gear Clipper <span className="text-blue-600">v47</span>
+            Gear Clipper <span className="text-blue-600">v50</span>
           </h1>
           <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1 italic">
-            Fast AI-2.5 &amp; Smart Naming
+            Robust Legacy API &amp; Smart Naming
           </p>
         </header>
 
