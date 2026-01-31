@@ -36,6 +36,7 @@ interface ImageItem extends ProcessResult {
   categoryId: string;
   itemName: string;
   name: string;
+  isNaming?: boolean;
 }
 
 const CATEGORIES: Category[] = [
@@ -49,6 +50,16 @@ const CATEGORIES: Category[] = [
   { id: '12_10_アクセサリー', label: 'アクセサリー' },
   { id: '13_11_エフェクト', label: 'エフェクト' },
 ];
+
+type GeminiJsonResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+};
 
 const App: React.FC = () => {
   const [apiKey, setApiKey] = useState<string>('');
@@ -283,6 +294,88 @@ const App: React.FC = () => {
     });
   };
 
+  const extractJsonFromModelText = (text: string): unknown => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      const start = text.indexOf('{');
+      const end = text.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        const candidate = text.slice(start, end + 1);
+        return JSON.parse(candidate);
+      }
+      throw new Error('Invalid JSON');
+    }
+  };
+
+  const suggestFilename = async (dataUrl: string, imgId: string): Promise<void> => {
+    if (!apiKey) return;
+
+    try {
+      const base64 = dataUrl.split(',')[1];
+      if (!base64) throw new Error('Invalid data URL');
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `衣服の画像分析。カテゴリ：[${CATEGORIES.map((c) => c.label).join(", ")}]から1つ選び、具体的でユニークな日本語名を提案。JSON: {"category": "...", "name": "..."}`,
+                  },
+                  { inlineData: { mimeType: 'image/png', data: base64 } },
+                ],
+              },
+            ],
+            generationConfig: { responseMimeType: 'application/json' },
+          }),
+        },
+      );
+
+      const result = (await response.json()) as GeminiJsonResponse;
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('No candidates');
+
+      const parsed = extractJsonFromModelText(text) as { category?: string; name?: string };
+      const foundCategory = CATEGORIES.find((c) => c.label === parsed.category) ?? {
+        id: '4_2_ドレス',
+        label: 'ドレス',
+      };
+      const itemName = String(parsed.name || '新装備').substring(0, 25);
+
+      setImages((prev) =>
+        prev.map((img) => {
+          if (img.id !== imgId) return img;
+          return {
+            ...img,
+            categoryId: foundCategory.id,
+            itemName,
+            name: generateFullFilename(foundCategory.id, itemName),
+            isNaming: false,
+          };
+        }),
+      );
+    } catch (e) {
+      console.error(e);
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === imgId
+            ? {
+                ...img,
+                isNaming: false,
+                itemName: '解析失敗',
+                name: generateFullFilename(img.categoryId, '解析失敗'),
+              }
+            : img,
+        ),
+      );
+    }
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -290,24 +383,30 @@ const App: React.FC = () => {
     setProcessing(true);
     for (const file of files) {
       const sourceUrl = URL.createObjectURL(file);
-      const initialObj: Omit<ImageItem, keyof ProcessResult | 'name'> & { name?: string } = {
-        id: crypto.randomUUID(),
+      const id = crypto.randomUUID();
+
+      const initialObj: Omit<ImageItem, keyof ProcessResult | 'name'> = {
+        id,
         sourceUrl,
         tolerance: 50,
         erosion: 0,
         categoryId: '4_2_ドレス',
-        itemName: '装備アイテム',
+        itemName: apiKey ? '解析中...' : '装備アイテム',
+        isNaming: Boolean(apiKey),
       };
 
       const result = await processImage(initialObj);
-      setImages((prev) => [
-        {
-          ...initialObj,
-          ...result,
-          name: generateFullFilename(initialObj.categoryId, initialObj.itemName),
-        } as ImageItem,
-        ...prev,
-      ]);
+      const finalItem: ImageItem = {
+        ...initialObj,
+        ...result,
+        name: generateFullFilename(initialObj.categoryId, initialObj.itemName),
+      };
+
+      setImages((prev) => [finalItem, ...prev]);
+
+      if (apiKey) {
+        void suggestFilename(result.originalUrl, id);
+      }
     }
 
     setProcessing(false);
@@ -342,7 +441,6 @@ const App: React.FC = () => {
         URL.revokeObjectURL(blobUrl);
       })
       .catch(() => {
-        // Fallback (should be rare)
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
@@ -361,7 +459,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-stone-100 p-4 md:p-8 font-sans text-stone-900 select-none">
-      {/* --- 精密調整モーダル (v44 Stable Fixed) --- */}
+      {/* --- 精密調整モーダル --- */}
       {adjustingItem && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-stone-900/95 backdrop-blur-sm animate-in fade-in duration-200"
@@ -371,7 +469,6 @@ const App: React.FC = () => {
             className="relative flex flex-col md:flex-row items-center gap-6 max-w-7xl w-full h-full justify-center"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* プレビュー画像 */}
             <div className="flex-1 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-stone-50 rounded-[3rem] overflow-hidden flex items-center justify-center border-4 border-white/10 shadow-2xl h-full max-h-[85vh]">
               <img
                 src={adjustingItem.originalUrl}
@@ -380,9 +477,7 @@ const App: React.FC = () => {
               />
             </div>
 
-            {/* 右側：超小型垂直・透過ツールバー */}
             <div className="flex flex-col gap-6 bg-black/40 backdrop-blur-xl p-3 py-6 rounded-full border border-white/5 shadow-2xl items-center">
-              {/* Sensitivity */}
               <div className="flex flex-col items-center relative">
                 <span className="text-white font-black text-[9px] bg-blue-500/80 px-2 rounded-full mb-1">
                   {adjustingItem.tolerance}
@@ -404,7 +499,6 @@ const App: React.FC = () => {
 
               <div className="w-6 h-px bg-white/10" />
 
-              {/* Erosion */}
               <div className="flex flex-col items-center relative">
                 <span className="text-white font-black text-[9px] bg-rose-500/80 px-2 rounded-full mb-1">
                   {adjustingItem.erosion}px
@@ -422,7 +516,6 @@ const App: React.FC = () => {
                 <label className="text-[7px] font-black uppercase text-stone-300 mt-1">Edge</label>
               </div>
 
-              {/* Close Icon Button */}
               <button
                 onClick={() => setAdjustingItem(null)}
                 className="w-10 h-10 rounded-full bg-white/90 text-stone-900 flex items-center justify-center shadow-xl hover:bg-green-500 hover:text-white transition-all active:scale-90"
@@ -450,10 +543,10 @@ const App: React.FC = () => {
             <Scissors className="text-blue-600 w-6 h-6" />
           </div>
           <h1 className="text-xl font-black uppercase italic tracking-tighter">
-            Gear Clipper <span className="text-blue-600">v44</span>
+            Gear Clipper <span className="text-blue-600">v45</span>
           </h1>
           <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1 italic">
-            Stable Defaults &amp; Watermark Purge
+            Auto-Naming &amp; Stable Processing
           </p>
         </header>
 
@@ -495,7 +588,7 @@ const App: React.FC = () => {
             ) : (
               <Upload className="text-blue-400 group-hover:scale-110 transition-transform" size={24} />
             )}
-            <h3 className="text-sm font-black text-stone-800 uppercase italic">Import Images</h3>
+            <h3 className="text-sm font-black text-stone-800 uppercase italic">Import Gear Assets</h3>
           </div>
         </div>
 
@@ -536,7 +629,6 @@ const App: React.FC = () => {
                 >
                   <div className="absolute left-0 top-0 h-full w-1 bg-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
 
-                  {/* リストにはサムネイルを表示 */}
                   <div className="flex-shrink-0">
                     <div className="w-14 h-14 bg-[url('https://www.transparenttextures.com/patterns/checkerboard.png')] bg-stone-50 rounded-lg overflow-hidden border border-stone-100 flex items-center justify-center">
                       <img src={img.thumbUrl} className="max-w-full max-h-full object-contain" alt="Thumb" />
@@ -557,7 +649,8 @@ const App: React.FC = () => {
                         ))}
                       </select>
                     </div>
-                    <div className="col-span-4">
+
+                    <div className="col-span-4 relative">
                       <input
                         type="text"
                         value={img.itemName}
@@ -565,12 +658,22 @@ const App: React.FC = () => {
                         className="w-full bg-stone-50 border border-stone-100 rounded-lg px-2 py-1.5 font-bold outline-none"
                         placeholder="名称..."
                       />
+                      {img.isNaming && (
+                        <Loader2
+                          size={10}
+                          className="absolute right-2 top-2 text-blue-500 animate-spin"
+                        />
+                      )}
                     </div>
+
                     <div className="col-span-3">
                       <div className="bg-stone-50 px-2 py-1.5 rounded border border-stone-100 truncate">
-                        <p className="font-mono text-stone-400 truncate uppercase tracking-tighter">{img.name}.png</p>
+                        <p className="font-mono text-stone-400 truncate uppercase tracking-tighter italic">
+                          {img.name}.png
+                        </p>
                       </div>
                     </div>
+
                     <div className="col-span-2 flex justify-end gap-1.5">
                       <button
                         onClick={() => setAdjustingItem(img)}
