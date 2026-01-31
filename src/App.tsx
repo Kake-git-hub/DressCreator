@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Download,
-  Image as ImageIcon,
   Key,
   Loader2,
   Save,
@@ -20,13 +19,6 @@ type Category = {
 type ProcessResult = {
   originalUrl: string;
   thumbUrl: string;
-};
-
-type BoundingBox = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
 };
 
 type ImageItem = {
@@ -120,9 +112,7 @@ const App: React.FC = () => {
     return currentMask;
   };
 
-  const processImage = async (
-    imgDataObj: Pick<ImageItem, 'sourceUrl' | 'tolerance' | 'erosion'>,
-  ): Promise<ProcessResult> => {
+  const processImage = async (imgDataObj: Pick<ImageItem, 'sourceUrl' | 'tolerance' | 'erosion'>): Promise<ProcessResult> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -217,10 +207,6 @@ const App: React.FC = () => {
         const islandVisited = new Uint8Array(totalPixels);
         const finalMask = new Uint8Array(totalPixels);
         const islandStack = new Uint32Array(totalPixels);
-        let minX = width;
-        let minY = height;
-        let maxX = 0;
-        let maxY = 0;
         let foundAny = false;
 
         for (let i = 0; i < totalPixels; i++) {
@@ -248,15 +234,7 @@ const App: React.FC = () => {
             }
 
             if (island.length > 50) {
-              island.forEach((p) => {
-                finalMask[p] = 1;
-                const px = p % width;
-                const py = (p / width) | 0;
-                if (px < minX) minX = px;
-                if (px > maxX) maxX = px;
-                if (py < minY) minY = py;
-                if (py > maxY) maxY = py;
-              });
+              island.forEach((p) => (finalMask[p] = 1));
               foundAny = true;
             }
           }
@@ -265,37 +243,29 @@ const App: React.FC = () => {
         for (let i = 0; i < totalPixels; i++) if (finalMask[i] === 0) data[i * 4 + 3] = 0;
         workCtx.putImageData(imageData, 0, 0);
 
-        const tightBox: BoundingBox | null = foundAny
-          ? { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 }
-          : null;
-
-        const generateOutput = (targetSize: number, isTight: boolean): string => {
+        // --- 出力生成: 位置をずらさないように元の構図を維持 ---
+        const generateOutput = (targetSize: number): string => {
           const finalCanvas = document.createElement('canvas');
           finalCanvas.width = targetSize;
           finalCanvas.height = targetSize;
           const fCtx = finalCanvas.getContext('2d');
           if (!fCtx) return finalCanvas.toDataURL('image/png');
           fCtx.imageSmoothingQuality = 'high';
-          if (!tightBox) return finalCanvas.toDataURL('image/png');
 
-          const scale = isTight
-            ? Math.min(targetSize / tightBox.w, targetSize / tightBox.h)
-            : Math.min((targetSize * 0.96) / width, (targetSize * 0.96) / height);
+          if (!foundAny) return finalCanvas.toDataURL('image/png');
 
-          const dw = (isTight ? tightBox.w : width) * scale;
-          const dh = (isTight ? tightBox.h : height) * scale;
+          // アスペクト比を維持して中央配置 (トリミングなし)
+          const scale = Math.min(targetSize / width, targetSize / height);
+          const dw = width * scale;
+          const dh = height * scale;
           const dx = (targetSize - dw) / 2;
           const dy = (targetSize - dh) / 2;
-          const sx = isTight ? tightBox.x : 0;
-          const sy = isTight ? tightBox.y : 0;
-          const sw = isTight ? tightBox.w : width;
-          const sh = isTight ? tightBox.h : height;
 
-          fCtx.drawImage(workCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
+          fCtx.drawImage(workCanvas, 0, 0, width, height, dx, dy, dw, dh);
           return finalCanvas.toDataURL('image/png');
         };
 
-        resolve({ originalUrl: generateOutput(2048, false), thumbUrl: generateOutput(1024, true) });
+        resolve({ originalUrl: generateOutput(2048), thumbUrl: generateOutput(1024) });
       };
 
       img.src = imgDataObj.sourceUrl;
@@ -305,6 +275,7 @@ const App: React.FC = () => {
   const suggestFilename = async (dataUrl: string, imgId: string): Promise<void> => {
     if (!apiKey) return;
 
+    // 解析用の画像を軽量化 (512pxに制限) してペイロードを減らす
     const model = 'gemini-2.5-flash-preview-09-2025';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -321,12 +292,13 @@ const App: React.FC = () => {
               {
                 parts: [
                   {
-                    text: `分析：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選択。具体的でユニークな日本語名を考案。JSON形式 {"category": "カテゴリ名", "name": "日本語名"} で出力。余計な文字は一切含めない。`,
+                    text: `衣服分析：[${CATEGORIES.map((c) => c.label).join(', ')}]から1つ選択。具体的でユニークな日本語名を提案。JSON形式 {"category": "...", "name": "..."} で出力。解説不要。`,
                   },
                   { inlineData: { mimeType: 'image/png', data: base64 } },
                 ],
               },
             ],
+            generationConfig: { responseMimeType: 'application/json' },
           }),
         });
 
@@ -359,7 +331,7 @@ const App: React.FC = () => {
         );
       } catch {
         if (retries > 0) {
-          await new Promise<void>((r) => setTimeout(r, 1500));
+          await new Promise<void>((r) => setTimeout(r, 2000));
           return tryFetch(retries - 1);
         }
 
@@ -404,7 +376,8 @@ const App: React.FC = () => {
       };
 
       setImages((prev) => [finalItem, ...prev]);
-      if (apiKey) void suggestFilename(result.originalUrl, id);
+      // 解析用にはサムネイルの方を使って負荷を抑える
+      if (apiKey) void suggestFilename(result.thumbUrl, id);
     }
 
     setProcessing(false);
@@ -528,10 +501,10 @@ const App: React.FC = () => {
             <Scissors className="text-blue-600 w-6 h-6" />
           </div>
           <h1 className="text-xl font-black uppercase italic tracking-tighter">
-            Gear Clipper <span className="text-blue-600">v50</span>
+            Gear Clipper <span className="text-blue-600">v51</span>
           </h1>
           <p className="text-[10px] font-bold text-stone-400 uppercase tracking-widest mt-1 italic">
-            Robust Legacy API &amp; Smart Naming
+            Position Sync &amp; High-Speed Naming
           </p>
         </header>
 
@@ -696,12 +669,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {images.length === 0 && !processing && (
-          <div className="flex flex-col items-center justify-center py-20 text-stone-300 border-2 border-dashed border-stone-200 rounded-[3rem]">
-            <ImageIcon size={32} className="mb-2 opacity-20" />
-            <p className="font-black uppercase tracking-[0.3em] text-[9px] italic">Ready to Import</p>
-          </div>
-        )}
       </div>
     </div>
   );
